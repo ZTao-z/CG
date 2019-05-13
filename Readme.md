@@ -13,3 +13,5 @@
 [第五次作业](https://github.com/ZTao-z/CG/tree/hw5)
 
 [第六次作业](https://github.com/ZTao-z/CG/tree/hw6)
+
+[第七次作业](https://github.com/ZTao-z/CG/tree/hw7)

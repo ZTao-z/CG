@@ -77,6 +77,7 @@ const char* Phong_light_fragment = "#version 330 core\n\
 										vec2 TexCoords;\n\
 										vec4 FragPosLightSpace;\n\
 									} fs_in;\n\
+									uniform vec3 openShadow;\n\
 									uniform sampler2D diffuseTexture;\n\
 									uniform sampler2D shadowMap;\n\
 									uniform vec3 lightPos;\n\
@@ -95,8 +96,6 @@ const char* Phong_light_fragment = "#version 330 core\n\
 										vec3 normal = normalize(fs_in.Normal);\n\
 										vec3 lightDir = normalize(lightPos - fs_in.FragPos);\n\
 										float bias = max(0.05 * (1.0 - dot(normal, lightDir)), 0.005);\n\
-										// check whether current frag pos is in shadow\n\
-										// float shadow = currentDepth - bias > closestDepth  ? 1.0 : 0.0;\n\
 										// PCF\n\
 										float shadow = 0.0; \n\
 										vec2 texelSize = 1.0 / textureSize(shadowMap, 0);\n\
@@ -133,7 +132,7 @@ const char* Phong_light_fragment = "#version 330 core\n\
 										spec = pow(max(dot(normal, halfwayDir), 0.0), 64.0);\n\
 										vec3 specular = spec * lightColor;\n\
 										// calculate shadow\n\
-										float shadow = ShadowCalculation(fs_in.FragPosLightSpace); \n\
+										float shadow = openShadow.x > 0? ShadowCalculation(fs_in.FragPosLightSpace) : 0.0f; \n\
 										shadow = min(shadow, 0.75); \n\
 										vec3 lighting = (ambient + (1.0 - shadow) * (diffuse + specular)) * color; \n\
 										FragColor = vec4(lighting, 1.0); \n\
@@ -205,10 +204,7 @@ int main() {
 	// 贴图
 	unsigned int woodTexture = loadTexture("./wood.png");
 
-	ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 1.00f);
-
 	// 顶点数组
-	
 	GLfloat* vertices = NULL;
 	GLfloat* planeVertices = NULL;
 
@@ -229,8 +225,7 @@ int main() {
 	glm::vec3 lightColor(0.5f, 0.5f, 0.5f);
 	glm::vec3 lightPos(-2.0f, 4.0f, -1.0f);
 
-	// 阴影
-	// Setup plane VAO
+	// 载入平面
 	GLuint planeVBO;
 	glGenVertexArrays(1, &planeVAO);
 	glGenBuffers(1, &planeVBO);
@@ -245,12 +240,10 @@ int main() {
 	glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(GLfloat), (GLvoid*)(6 * sizeof(GLfloat)));
 	glBindVertexArray(0);
 
-	// Configure depth map FBO
+	// 创建深度缓冲
 	const GLuint SHADOW_WIDTH = 1024, SHADOW_HEIGHT = 1024;
-	GLuint depthMapFBO;
+	GLuint depthMapFBO, depthMap;
 	glGenFramebuffers(1, &depthMapFBO);
-	// - Create depth texture
-	GLuint depthMap;
 	glGenTextures(1, &depthMap);
 	glBindTexture(GL_TEXTURE_2D, depthMap);
 
@@ -264,15 +257,14 @@ int main() {
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, depthMap, 0);
 	glDrawBuffer(GL_NONE);
 	glReadBuffer(GL_NONE);
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-	normalShader.use();
-	normalShader.bindInt("diffuseTexture", 0);
-	normalShader.bindInt("shadowMap", 1);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);	
 
 	// 模式选择
-	int modeChange = 1, orth_pers = 1;
+	int modeChange = 0, orth_pers = 1;
 	bool isAutoMove = false;
+
+	// 默认颜色
+	ImVec4 clear_color = ImVec4(0.0f, 0.0f, 0.0f, 1.00f);
 
 	// 游戏循环
 	while (!glfwWindowShouldClose(window)) {
@@ -291,6 +283,7 @@ int main() {
 
 		// 设置GUI窗口内容
 		ImGui::Begin("Mode");
+		ImGui::RadioButton("No Shadow", &modeChange, 0);
 		ImGui::RadioButton("Normal", &modeChange, 1);
 		ImGui::RadioButton("Bonus", &modeChange, 2);
 		ImGui::End();
@@ -315,32 +308,31 @@ int main() {
 		ImGui::End();
 		// 渲染指令
 		ImGui::Render();
-
 		int display_w, display_h;
 		glfwMakeContextCurrent(window);
 		glfwGetFramebufferSize(window, &display_w, &display_h);
 		glViewport(0, 0, display_w, display_h);
 		// 清除窗口的移动轨迹
 		glClearColor(clear_color.x, clear_color.y, clear_color.z, clear_color.w);
-		// 开启深度测试，清空深度测试缓存
+		// 清空深度测试缓存
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		// 1. Render depth of scene to texture (from ligth's perspective)
-		// - Get light projection/view matrix.
+		/*渲染阴影贴图*/
+		// 计算光空间转换矩阵
 		glm::mat4 lightProjection = glm::mat4(1.0f), 
 				lightView = glm::mat4(1.0f),
 				lightSpaceMatrix = glm::mat4(1.0f);
-		GLfloat near_plane = 1.0f, far_plane = 7.5f;
+		GLfloat near_plane = 1.0f, far_plane = 10.0f;
 		if (orth_pers == 1) {
 			lightProjection = glm::ortho(-10.0f, 10.0f, -10.0f, 10.0f, near_plane, far_plane);
 		}
 		else {
-			lightProjection = glm::perspective(glm::radians(90.0f), (float)WINDOW_WIDTH / (float)WINDOW_HEIGHT, near_plane/2, far_plane*2);
+			lightProjection = glm::perspective(glm::radians(90.0f), (float)WINDOW_WIDTH / (float)WINDOW_HEIGHT, near_plane/3, far_plane*4);
 		}
 		
 		lightView = glm::lookAt(lightPos, glm::vec3(0.0f), glm::vec3(0.0, 1.0, 0.0));
 		lightSpaceMatrix = lightProjection * lightView;
-		// - now render scene from light's point of view
+		// 渲染阴影贴图
 		simpleDepthShader.use();
 		simpleDepthShader.bindMat4("lightSpaceMatrix", lightSpaceMatrix);
 
@@ -349,26 +341,27 @@ int main() {
 			glClear(GL_DEPTH_BUFFER_BIT);
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, woodTexture);
+			// 消除悬浮
 			glCullFace(GL_FRONT);
 			renderScene(simpleDepthShader);
-			glCullFace(GL_BACK); // 不要忘记设回原先的culling face
+			// 设回原先的culling face
+			glCullFace(GL_BACK); 
 		glBindFramebuffer(GL_FRAMEBUFFER, 0);
-		// GLM变换
-		// reset viewport
-		glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-		// 2. render scene as normal using the generated depth/shadow map  
-		// --------------------------------------------------------------
+		// 渲染正常场景
 		glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 		normalShader.use();
+		glm::vec3 openShadow(modeChange);
 		glm::mat4 projection = glm::perspective(glm::radians(camera.getZoom()), (float)WINDOW_WIDTH / (float)WINDOW_HEIGHT, 0.1f, 100.0f);
 		glm::mat4 view = camera.getView();
 		glm::vec3 camPos = camera.getPosition();
+		// 设置参数
+		normalShader.bindVec3("openShadow", openShadow);
+		normalShader.bindInt("diffuseTexture", 0);
+		normalShader.bindInt("shadowMap", 1);
 		normalShader.bindMat4("projection", projection);
 		normalShader.bindMat4("view", view);
-		// set light uniforms
 		normalShader.bindVec3("viewPos", camPos);
 		normalShader.bindVec3("lightPos", lightPos);
 		normalShader.bindMat4("lightSpaceMatrix", lightSpaceMatrix);
@@ -377,7 +370,6 @@ int main() {
 		glActiveTexture(GL_TEXTURE1);
 		glBindTexture(GL_TEXTURE_2D, depthMap);
 		renderScene(normalShader);
-
 
 		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 		glfwMakeContextCurrent(window);
@@ -458,12 +450,12 @@ void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 
 void renderScene(Shader &shader)
 {
-	// floor
+	// 渲染平面
 	glm::mat4 model = glm::mat4(1.0f);
 	shader.bindMat4("model", model);
 	glBindVertexArray(planeVAO);
 	glDrawArrays(GL_TRIANGLES, 0, 6);
-	// cubes
+	// 渲染立方体
 	model = glm::mat4(1.0f);
 	model = glm::translate(model, glm::vec3(0.0f, 1.5f, 0.0));
 	model = glm::scale(model, glm::vec3(0.5f));
@@ -484,7 +476,6 @@ void renderScene(Shader &shader)
 
 void renderCube()
 {
-	// initialize (if necessary)
 	if (cubeVAO == 0)
 	{
 		std::vector<GLfloat> v = hw7.getVertices2();
@@ -494,10 +485,8 @@ void renderCube()
 		}
 		glGenVertexArrays(1, &cubeVAO);
 		glGenBuffers(1, &cubeVBO);
-		// fill buffer
 		glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
 		glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * v.size(), cubeVertices, GL_STATIC_DRAW);
-		// link vertex attributes
 		glBindVertexArray(cubeVAO);
 		glEnableVertexAttribArray(0);
 		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
@@ -514,7 +503,7 @@ void renderCube()
 	glBindVertexArray(0);
 }
 
-void RenderSceneEBO() {
+void renderCubeEBO() {
 	int indSize = 0;
 	if (cubeVAO == 0)
 	{
@@ -529,7 +518,6 @@ void RenderSceneEBO() {
 		for (unsigned int i = 0; i < ind.size(); i++) {
 			cubeIndices[i] = ind[i];
 		}
-		/*总流程*/
 		// 使用glGenBuffers函数和一个缓冲ID生成一个VBO对象
 		glGenBuffers(1, &cubeVBO);
 		// 使用glGenBuffers函数和一个缓冲ID生成一个VAO对象
@@ -566,8 +554,7 @@ void RenderSceneEBO() {
 	glBindVertexArray(0);
 }
 
-// utility function for loading a 2D texture from file
-// ---------------------------------------------------
+// 从文件中读取2D贴图
 unsigned int loadTexture(char const * path)
 {
 	unsigned int textureID;

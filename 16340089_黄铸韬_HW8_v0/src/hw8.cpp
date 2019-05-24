@@ -192,7 +192,7 @@ int main() {
 		// bezierÇúÏß
 		bezier.drawBezier(pointList, p);
 		// ¹ý³Ì
-		t += deltaTime * 0.1;
+		t += deltaTime * 0.05;
 		if (pointList.size() >= 3) {
 			std::deque<Point> tp = pointList;
 			for (int count = 0; count < pointList.size() - 1; count++) {
